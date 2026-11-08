@@ -25,6 +25,9 @@ export class Netplay {
         // Input synchronization
         this.inputs = {};
         this.inputsData = {};
+        // Delay-based input sync: inputs take effect N frames after generation
+        this.INPUT_DELAY = 6;
+        this.pendingInputs = {};
         this.init_frame = 0;
         this.currentFrame = 0;
 
@@ -909,6 +912,7 @@ export class Netplay {
         this.updateNetplayUI(true);
         this.emu.isNetplay = true;
         this.inputs = {};
+        this.pendingInputs = {};
         this.owner = isOwner;
 
         // Update UI
@@ -1613,13 +1617,14 @@ export class Netplay {
     simulateInput(player, index, value) {
         if (!this.emu.isNetplay || !this.emu.gameManager || !this.emu.gameManager.functions) return;
 
-        // Input-based netplay: apply locally and broadcast over socket
+        // Input-based netplay: queue input with delay, broadcast to peers
         if (this.inputMode) {
             const pidx = this.getUserIndex();
-            const coreFn = this.originalSimulateInput || this.emu.gameManager.functions.simulateInput;
-            try { coreFn(pidx, index, value); } catch (e) {}
+            const applyFrame = (this.currentFrame || 0) + this.INPUT_DELAY;
+            this.pendingInputs[applyFrame] = this.pendingInputs[applyFrame] || [];
+            this.pendingInputs[applyFrame].push({ player: pidx, index, value });
             if (this.socket && this.socket.connected) {
-                this.socket.emit("input", { player: pidx, index, value });
+                this.socket.emit("input", { player: pidx, index, value, applyFrame });
             }
             return;
         }
@@ -1880,13 +1885,12 @@ export class Netplay {
 
         this.socket.on("data-message", (d) => { this.dataMessage(d); });
 
-        // Input-based netplay: receive remote inputs and apply locally
+        // Input-based netplay: receive remote inputs and queue by applyFrame
         this.socket.on("input", (d) => {
             if (!this.inputMode || !d) return;
-            if (!this.emu.gameManager || !this.emu.gameManager.functions || !this.originalSimulateInput) return;
-            try {
-                this.originalSimulateInput(d.player, d.index, d.value);
-            } catch (e) {}
+            const applyFrame = (typeof d.applyFrame === "number") ? d.applyFrame : (this.currentFrame || 0) + this.INPUT_DELAY;
+            this.pendingInputs[applyFrame] = this.pendingInputs[applyFrame] || [];
+            this.pendingInputs[applyFrame].push({ player: d.player, index: d.index, value: d.value });
         });
 
         // Start synchronization: game starts (restarts) when all players are ready
@@ -1910,6 +1914,7 @@ export class Netplay {
             this._log(this.owner ? "HOST" : "GUEST", "All players ready - starting game");
             if (this.emu.gameManager) {
                 try { this.emu.gameManager.restart(); } catch (e) {}
+                try { this.reset(); } catch (e) {}
                 try { this.emu.gameManager.toggleMainLoop(1); } catch (e) {}
             }
         });
@@ -2122,6 +2127,7 @@ export class Netplay {
         this.init_frame = this.emu.gameManager ? this.emu.gameManager.getFrameNum() : 0;
         this.currentFrame = 0;
         this.inputsData = {};
+        this.pendingInputs = {};
     }
 
     /** Post-frame hook for input synchronization (host only) */
@@ -2130,8 +2136,31 @@ export class Netplay {
             try { this._origPostMainLoop(); } catch (e) {}
         }
 
-        if (this.emu.isNetplay && !this.owner) return;
+        if (this.emu.isNetplay && !this.owner && !this.inputMode) return;
         this.currentFrame = (this.emu.gameManager ? this.emu.gameManager.getFrameNum() : 0) - (this.init_frame || 0);
+
+        // Delay-based: apply queued inputs whose frame has arrived
+        if (this.inputMode && this.originalSimulateInput) {
+            const frame = this.currentFrame;
+            const pending = this.pendingInputs[frame];
+            if (pending) {
+                pending.forEach((inp) => {
+                    try { this.originalSimulateInput(inp.player, inp.index, inp.value); } catch (e) {}
+                });
+                delete this.pendingInputs[frame];
+            }
+            // Late inputs: apply immediately
+            Object.keys(this.pendingInputs).forEach((k) => {
+                const f = parseInt(k, 10);
+                if (!isNaN(f) && f < frame) {
+                    this.pendingInputs[f].forEach((inp) => {
+                        try { this.originalSimulateInput(inp.player, inp.index, inp.value); } catch (e) {}
+                    });
+                    delete this.pendingInputs[f];
+                }
+            });
+        }
+
         if (this.inputMode) return;
         if (!this.emu.isNetplay || !this.owner) return;
         
