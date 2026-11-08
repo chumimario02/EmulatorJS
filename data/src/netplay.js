@@ -29,6 +29,7 @@ export class Netplay {
         this.INPUT_DELAY = 6;
         this.pendingInputs = {};
         this._delayLoopRunning = false;
+        this._started = false;
         this.init_frame = 0;
         this.currentFrame = 0;
 
@@ -1602,6 +1603,7 @@ export class Netplay {
 
         // Reset state
         this.emu.isNetplay = false;
+        this._started = false;
         this.owner = false;
         this.players = {};
         this.playerID = null;
@@ -1916,10 +1918,14 @@ export class Netplay {
         this.socket.on("start-game", (d) => {
             if (!this.inputMode) return;
             this._log(this.owner ? "HOST" : "GUEST", "All players ready - starting game");
+            this._started = true;
             if (this.emu.gameManager) {
-                try { this.emu.gameManager.restart(); } catch (e) {}
-                try { this.reset(); } catch (e) {}
-                try { this.emu.gameManager.toggleMainLoop(1); } catch (e) {}
+                try { this.emu.gameManager.restart(); } catch (e) { console.error("restart err", e); }
+                try { this.reset(); } catch (e) { console.error("reset err", e); }
+                const resume = () => {
+                    try { this.emu.gameManager.toggleMainLoop(1); } catch (e) { console.error("toggle err", e); }
+                };
+                requestAnimationFrame(() => requestAnimationFrame(resume));
             }
         });
         
@@ -2134,6 +2140,10 @@ export class Netplay {
             if (!this._delayLoopRunning || !this.emu.isNetplay || !this.inputMode) return;
             const gm = this.emu.gameManager;
             if (gm) {
+                // Ensure the main loop is running once started
+                if (this._started && this.emu.paused) {
+                    try { gm.toggleMainLoop(1); } catch (e) {}
+                }
                 const frame = (gm.getFrameNum() || 0) - (this.init_frame || 0);
                 this.currentFrame = frame;
                 if (this.originalSimulateInput) {
