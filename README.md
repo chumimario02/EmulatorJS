@@ -22,6 +22,13 @@ Join our Discord server:
 
 ---
 
+## Input-Based Netplay (this fork)
+
+This fork adds an **input-based netplay mode**: instead of streaming video from a host,
+every player runs the emulator locally and only inputs are exchanged over the netplay
+server socket. Lower bandwidth, lower latency feel. Opt out (back to video netplay) with
+`window.EJS_netplayVideoMode = true` or `?videoNetplay`.
+
 ## Getting Started
 
 ### Supported Systems

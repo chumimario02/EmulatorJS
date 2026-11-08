@@ -173,6 +173,8 @@ const config = {
     gameParentUrl: window.EJS_gameParentUrl,
     netplayUrl: window.EJS_netplayServer,
     netplayICEServers: window.EJS_netplayICEServers,
+    netplayInputMode: window.EJS_netplayInputMode,
+    netplayVideoMode: window.EJS_netplayVideoMode,
     gameId: window.EJS_gameID,
     backgroundImg: window.EJS_backgroundImage,
     backgroundBlur: window.EJS_backgroundBlur,

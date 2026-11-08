@@ -95,6 +95,22 @@ export class Netplay {
         if (this.iceServers.length === 0) {
             console.warn("[NETPLAY] No ICE servers configured. Connections will only work on LAN.");
         }
+
+        // Input-based netplay mode: no video streaming, all peers run the core
+        // locally and exchange inputs over the socket. Opt-in via config or flag.
+        let urlInputMode = false;
+        try {
+            const params = new URLSearchParams(window.location.search);
+            urlInputMode = params.get("inputNetplay") !== null || params.get("netplay") === "input";
+        } catch (e) {}
+        // This fork defaults to input-based netplay. Opt out with videoMode.
+        let urlVideoMode = false;
+        try {
+            const params = new URLSearchParams(window.location.search);
+            urlVideoMode = params.get("videoNetplay") !== null || params.get("netplay") === "video";
+        } catch (e) {}
+        const videoMode = (this.emu.config && this.emu.config.netplayVideoMode) || window.EJS_netplayVideoMode || urlVideoMode;
+        this.inputMode = !videoMode;
     }
 
     /** Whether the netplay menu DOM has been built */
@@ -385,6 +401,9 @@ export class Netplay {
         if (Module) {
             this._origPostMainLoop = Module.postMainLoop || null;
             Module.postMainLoop = () => this._initModulePostMainLoop();
+        }
+        if (this.emu.gameManager && this.emu.gameManager.functions && this.emu.gameManager.functions.simulateInput) {
+            this.originalSimulateInput = this.originalSimulateInput || this.emu.gameManager.functions.simulateInput;
         }
     }
 
@@ -909,40 +928,49 @@ export class Netplay {
         if (!isOwner) {
             // Guest setup: freeze local emulation and show remote stream
             this._log("GUEST", "Setting up as guest...");
-            
-            this.freezeGuest();
 
-            if (this.emu.frontend.canvas) {
+            if (this.inputMode) {
+                this._log("GUEST", "Input mode: running locally, no freeze");
+                if (this.emu.gameManager) {
+                    try { this.emu.gameManager.toggleMainLoop(1); } catch (e) {}
+                }
+            } else {
+                this.freezeGuest();
+            }
+
+            if (this.emu.frontend.canvas && !this.inputMode) {
                 this.emu.frontend.canvas.classList.add("ejs_netplay_offscreen_canvas");
             }
 
-            // Create overlay canvas for remote video
-            if (!this.emu.netplayCanvas) {
-                this.emu.netplayCanvas = this.emu.createElement("canvas");
-                this.emu.netplayCanvas.classList.add("ejs_canvas");
-            }
+            // Create overlay canvas for remote video (video mode only)
+            if (!this.inputMode) {
+                if (!this.emu.netplayCanvas) {
+                    this.emu.netplayCanvas = this.emu.createElement("canvas");
+                    this.emu.netplayCanvas.classList.add("ejs_canvas");
+                }
 
-            Object.assign(this.emu.netplayCanvas.style, {
-                position: "absolute",
-                top: "0",
-                left: "0",
-                width: "100%",
-                height: "100%",
-                zIndex: "5",
-                display: "block",
-                objectFit: "contain",
-                objectPosition: "center",
-                pointerEvents: "none"
-            });
+                Object.assign(this.emu.netplayCanvas.style, {
+                    position: "absolute",
+                    top: "0",
+                    left: "0",
+                    width: "100%",
+                    height: "100%",
+                    zIndex: "5",
+                    display: "block",
+                    objectFit: "contain",
+                    objectPosition: "center",
+                    pointerEvents: "none"
+                });
 
-            if (!this.emu.netplayCanvas.parentElement) {
-                this.emu.frontend.elements.parent.appendChild(this.emu.netplayCanvas);
-            }
+                if (!this.emu.netplayCanvas.parentElement) {
+                    this.emu.frontend.elements.parent.appendChild(this.emu.netplayCanvas);
+                }
 
-            const parentCs = window.getComputedStyle(this.emu.frontend.elements.parent);
-            if (parentCs.position === "static") {
-                this._restoreParentPosition = this.emu.frontend.elements.parent.style.position;
-                this.emu.frontend.elements.parent.style.position = "relative";
+                const parentCs = window.getComputedStyle(this.emu.frontend.elements.parent);
+                if (parentCs.position === "static") {
+                    this._restoreParentPosition = this.emu.frontend.elements.parent.style.position;
+                    this.emu.frontend.elements.parent.style.position = "relative";
+                }
             }
 
             // Hide cheat button for guests
@@ -954,54 +982,52 @@ export class Netplay {
                 this.emu.gameManager.resetCheat();
             }
 
-            // Show "Connecting..." message
-            const ctx = this.emu.netplayCanvas.getContext("2d", { alpha: false, willReadFrequently: true });
-            const nativeRes = this.getNativeResolution();
-            const nativeW = (nativeRes && nativeRes.width) ? nativeRes.width : 640;
-            const nativeH = (nativeRes && nativeRes.height) ? nativeRes.height : 480;
-            this.emu.netplayCanvas.width = nativeW;
-            this.emu.netplayCanvas.height = nativeH;
-            
-            ctx.fillStyle = "#000";
-            ctx.fillRect(0, 0, nativeW, nativeH);
-            ctx.fillStyle = "#fff";
-            ctx.font = "20px sans-serif";
-            ctx.textAlign = "center";
-            ctx.textBaseline = "middle";
-            ctx.fillText("Connecting...", nativeW / 2, nativeH / 2);
+            // Show "Connecting..." message (video mode only)
+            if (!this.inputMode && this.emu.netplayCanvas) {
+                const ctx = this.emu.netplayCanvas.getContext("2d", { alpha: false, willReadFrequently: true });
+                const nativeRes = this.getNativeResolution();
+                const nativeW = (nativeRes && nativeRes.width) ? nativeRes.width : 640;
+                const nativeH = (nativeRes && nativeRes.height) ? nativeRes.height : 480;
+                this.emu.netplayCanvas.width = nativeW;
+                this.emu.netplayCanvas.height = nativeH;
 
-            // Redirect local inputs to send over network
-            if (this.emu.gameManager && this.emu.gameManager.functions && this.emu.gameManager.functions.simulateInput) {
-                this.originalSimulateInput = this.emu.gameManager.functions.simulateInput;
-                this.emu.gameManager.functions.simulateInput = (player, index, value) => {
-                    const pidx = this.getUserIndex();
-                    const pcs = this.peerConnections;
-                    for (const key in pcs) {
-                        if (pcs[key] && pcs[key].dataChannel && pcs[key].dataChannel.readyState === "open") {
-                            pcs[key].dataChannel.send(JSON.stringify({ player: pidx, index, value }));
-                        }
-                    }
-                };
+                ctx.fillStyle = "#000";
+                ctx.fillRect(0, 0, nativeW, nativeH);
+                ctx.fillStyle = "#fff";
+                ctx.font = "20px sans-serif";
+                ctx.textAlign = "center";
+                ctx.textBaseline = "middle";
+                ctx.fillText("Connecting...", nativeW / 2, nativeH / 2);
+            }
+
+            // Save original core simulateInput for input mode broadcasting
+            if (this.inputMode && this.emu.gameManager && this.emu.gameManager.functions && this.emu.gameManager.functions.simulateInput) {
+                this.originalSimulateInput = this.originalSimulateInput || this.emu.gameManager.functions.simulateInput;
             }
 
             this._gotVideoEver = false;
 
-            // Eagerly arm audio unlock so first user interaction starts audio
-            this.armGuestAudioUnlock();
+            if (!this.inputMode) {
+                // Eagerly arm audio unlock so first user interaction starts audio
+                this.armGuestAudioUnlock();
 
-            // Connection timeout fallback
-            this.connectionTimeout = setTimeout(() => {
-                if (!this.webRtcReady && !this._gotVideoEver) {
-                    this.emu.frontend.displayMessage("Connection failed", 5000, undefined, "error");
-                    this.leaveRoom();
-                }
-            }, 15000);
+                // Connection timeout fallback
+                this.connectionTimeout = setTimeout(() => {
+                    if (!this.webRtcReady && !this._gotVideoEver) {
+                        this.emu.frontend.displayMessage("Connection failed", 5000, undefined, "error");
+                        this.leaveRoom();
+                    }
+                }, 15000);
+            }
 
             this.emu.frontend.elements.parent.focus();
         } else {
             this._log("HOST", "Setup complete");
             if (this.emu.gameManager) {
                 try { this.emu.gameManager.toggleMainLoop(1); } catch (e) {}
+            }
+            if (this.inputMode && this.emu.gameManager && this.emu.gameManager.functions && this.emu.gameManager.functions.simulateInput) {
+                this.originalSimulateInput = this.originalSimulateInput || this.emu.gameManager.functions.simulateInput;
             }
         }
     }
@@ -1483,7 +1509,7 @@ export class Netplay {
             this.emu.frontend.canvas.classList.remove("ejs_netplay_offscreen_canvas");
         }
 
-        if (!this.owner) {
+        if (!this.owner && !this.inputMode) {
             this.unfreezeGuest();
         }
 
@@ -1576,7 +1602,20 @@ export class Netplay {
 
     /** Process and send input to network */
     simulateInput(player, index, value) {
-        if (!this.emu.isNetplay || !this.emu.gameManager || !this.emu.gameManager.functions || !this.emu.gameManager.functions.simulateInput) return;
+        if (!this.emu.isNetplay || !this.emu.gameManager || !this.emu.gameManager.functions) return;
+
+        // Input-based netplay: apply locally and broadcast over socket
+        if (this.inputMode) {
+            const pidx = this.getUserIndex();
+            const coreFn = this.originalSimulateInput || this.emu.gameManager.functions.simulateInput;
+            try { coreFn(pidx, index, value); } catch (e) {}
+            if (this.socket && this.socket.connected) {
+                this.socket.emit("input", { player: pidx, index, value });
+            }
+            return;
+        }
+
+        if (!this.emu.gameManager.functions.simulateInput) return;
         const pidx = this.getUserIndex();
         const f = this.currentFrame || 0;
         if (this.owner) {
@@ -1817,8 +1856,8 @@ export class Netplay {
             this.updatePlayersTable();
             this.chatRefreshRecipients();
 
-            // Host creates peer connections for new players
-            if (this.owner) {
+            // Host creates peer connections for new players (video mode only)
+            if (this.owner && !this.inputMode) {
                 this.initWebRTCStream().then(() => {
                     Object.keys(users).forEach((pid) => {
                         if (pid !== this.playerID) {
@@ -1831,6 +1870,15 @@ export class Netplay {
         });
 
         this.socket.on("data-message", (d) => { this.dataMessage(d); });
+
+        // Input-based netplay: receive remote inputs and apply locally
+        this.socket.on("input", (d) => {
+            if (!this.inputMode || !d) return;
+            if (!this.emu.gameManager || !this.emu.gameManager.functions || !this.originalSimulateInput) return;
+            try {
+                this.originalSimulateInput(d.player, d.index, d.value);
+            } catch (e) {}
+        });
         
         // Handle WebRTC signaling
         this.socket.on("webrtc-signal", (data) => {
@@ -2050,6 +2098,7 @@ export class Netplay {
 
         if (this.emu.isNetplay && !this.owner) return;
         this.currentFrame = (this.emu.gameManager ? this.emu.gameManager.getFrameNum() : 0) - (this.init_frame || 0);
+        if (this.inputMode) return;
         if (!this.emu.isNetplay || !this.owner) return;
         
         // Process and broadcast inputs for current frame
