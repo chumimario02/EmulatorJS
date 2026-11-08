@@ -28,6 +28,7 @@ export class Netplay {
         // Delay-based input sync: inputs take effect N frames after generation
         this.INPUT_DELAY = 6;
         this.pendingInputs = {};
+        this._delayLoopRunning = false;
         this.init_frame = 0;
         this.currentFrame = 0;
 
@@ -938,6 +939,7 @@ export class Netplay {
                 if (this.emu.gameManager) {
                     try { this.emu.gameManager.toggleMainLoop(0); } catch (e) {}
                 }
+                this._startDelayLoop();
                 // Signal readiness; game starts when all players are ready
                 if (this.socket && this.socket.connected) this.socket.emit("ready", {});
             } else {
@@ -1036,6 +1038,7 @@ export class Netplay {
                 if (this.emu.gameManager && this.emu.gameManager.functions && this.emu.gameManager.functions.simulateInput) {
                     this.originalSimulateInput = this.originalSimulateInput || this.emu.gameManager.functions.simulateInput;
                 }
+                this._startDelayLoop();
                 if (this.socket && this.socket.connected) this.socket.emit("ready", {});
             } else {
                 if (this.emu.gameManager) {
@@ -1482,6 +1485,7 @@ export class Netplay {
         this._captureLoopRunning = false;
         this._captureCtx = null;
         this.captureCanvas = null;
+        this._stopDelayLoop();
 
         if (this._leaving) return;
         this._leaving = true;
@@ -2120,6 +2124,45 @@ export class Netplay {
         if (this.socket && this.socket.connected) {
             this.socket.emit("data-message", d);
         }
+    }
+
+    /** Drive delay-based input application via requestAnimationFrame */
+    _startDelayLoop() {
+        if (this._delayLoopRunning) return;
+        this._delayLoopRunning = true;
+        const loop = () => {
+            if (!this._delayLoopRunning || !this.emu.isNetplay || !this.inputMode) return;
+            const gm = this.emu.gameManager;
+            if (gm) {
+                const frame = (gm.getFrameNum() || 0) - (this.init_frame || 0);
+                this.currentFrame = frame;
+                if (this.originalSimulateInput) {
+                    const pending = this.pendingInputs[frame];
+                    if (pending) {
+                        pending.forEach((inp) => {
+                            try { this.originalSimulateInput(inp.player, inp.index, inp.value); } catch (e) {}
+                        });
+                        delete this.pendingInputs[frame];
+                    }
+                    // Late inputs
+                    Object.keys(this.pendingInputs).forEach((k) => {
+                        const f = parseInt(k, 10);
+                        if (!isNaN(f) && f < frame) {
+                            this.pendingInputs[f].forEach((inp) => {
+                                try { this.originalSimulateInput(inp.player, inp.index, inp.value); } catch (e) {}
+                            });
+                            delete this.pendingInputs[f];
+                        }
+                    });
+                }
+            }
+            requestAnimationFrame(loop);
+        };
+        requestAnimationFrame(loop);
+    }
+
+    _stopDelayLoop() {
+        this._delayLoopRunning = false;
     }
 
     /** Reset frame counters and input data */
