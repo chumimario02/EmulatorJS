@@ -930,10 +930,12 @@ export class Netplay {
             this._log("GUEST", "Setting up as guest...");
 
             if (this.inputMode) {
-                this._log("GUEST", "Input mode: running locally, no freeze");
+                this._log("GUEST", "Input mode: running locally, waiting for start");
                 if (this.emu.gameManager) {
-                    try { this.emu.gameManager.toggleMainLoop(1); } catch (e) {}
+                    try { this.emu.gameManager.toggleMainLoop(0); } catch (e) {}
                 }
+                // Signal readiness; game starts when all players are ready
+                if (this.socket && this.socket.connected) this.socket.emit("ready", {});
             } else {
                 this.freezeGuest();
             }
@@ -1023,11 +1025,18 @@ export class Netplay {
             this.emu.frontend.elements.parent.focus();
         } else {
             this._log("HOST", "Setup complete");
-            if (this.emu.gameManager) {
-                try { this.emu.gameManager.toggleMainLoop(1); } catch (e) {}
-            }
-            if (this.inputMode && this.emu.gameManager && this.emu.gameManager.functions && this.emu.gameManager.functions.simulateInput) {
-                this.originalSimulateInput = this.originalSimulateInput || this.emu.gameManager.functions.simulateInput;
+            if (this.inputMode) {
+                if (this.emu.gameManager) {
+                    try { this.emu.gameManager.toggleMainLoop(0); } catch (e) {}
+                }
+                if (this.emu.gameManager && this.emu.gameManager.functions && this.emu.gameManager.functions.simulateInput) {
+                    this.originalSimulateInput = this.originalSimulateInput || this.emu.gameManager.functions.simulateInput;
+                }
+                if (this.socket && this.socket.connected) this.socket.emit("ready", {});
+            } else {
+                if (this.emu.gameManager) {
+                    try { this.emu.gameManager.toggleMainLoop(1); } catch (e) {}
+                }
             }
         }
     }
@@ -1878,6 +1887,31 @@ export class Netplay {
             try {
                 this.originalSimulateInput(d.player, d.index, d.value);
             } catch (e) {}
+        });
+
+        // Start synchronization: game starts (restarts) when all players are ready
+        this.socket.on("ready-update", (d) => {
+            if (!this.inputMode) return;
+            if (d && d.reset) {
+                // A player joined/left: pause and re-signal readiness
+                if (this.emu.gameManager) {
+                    try { this.emu.gameManager.toggleMainLoop(0); } catch (e) {}
+                }
+                if (this.socket && this.socket.connected) this.socket.emit("ready", {});
+                return;
+            }
+            if (d && d.ready) {
+                this._dlog("[NETPLAY] Ready players:", d.ready.length);
+            }
+        });
+
+        this.socket.on("start-game", (d) => {
+            if (!this.inputMode) return;
+            this._log(this.owner ? "HOST" : "GUEST", "All players ready - starting game");
+            if (this.emu.gameManager) {
+                try { this.emu.gameManager.restart(); } catch (e) {}
+                try { this.emu.gameManager.toggleMainLoop(1); } catch (e) {}
+            }
         });
         
         // Handle WebRTC signaling
