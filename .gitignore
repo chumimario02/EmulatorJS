@@ -16,6 +16,5 @@ data/cores/*
 dist/
 jsdoc/
 
-test.html
 rom.bin
 
