@@ -1342,7 +1342,8 @@ class EJS_Frontend {
             if (this.ejs.config.buttonOpts.gamepad.visible === false) controlMenu.style.display = "none";
             if (this.ejs.config.buttonOpts.cheat.visible === false) cheatMenu.style.display = "none";
             if (this.ejs.config.buttonOpts.cacheManager.visible === false) cache.style.display = "none";
-            if (this.ejs.config.buttonOpts.netplay.visible === false) netplay.style.display = "none";
+            // Netplay button is always visible in this fork
+            netplay.style.display = "";
             if (this.ejs.config.buttonOpts.diskButton.visible === false) diskButton[0].style.display = "none";
             if (this.ejs.config.buttonOpts.volumeSlider.visible === false) volumeSlider.style.display = "none";
             if (this.ejs.config.buttonOpts.exitEmulation.visible === false) exitEmulation.style.display = "none";
