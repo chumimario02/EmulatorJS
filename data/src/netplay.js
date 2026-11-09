@@ -27,7 +27,7 @@ export class Netplay {
         this.inputsData = {};
         // Delay-based input sync: inputs take effect N frames after generation
         // Larger value = more tolerance to latency jitter (less desync) but more input lag.
-        this.INPUT_DELAY = (typeof window.EJS_netplayInputDelay === "number" && window.EJS_netplayInputDelay > 0)
+        this.INPUT_DELAY = (typeof window.EJS_netplayInputDelay === "number" && window.EJS_netplayInputDelay >= 0)
             ? window.EJS_netplayInputDelay : 6;
         this.pendingInputs = {};
         this._delayLoopRunning = false;
